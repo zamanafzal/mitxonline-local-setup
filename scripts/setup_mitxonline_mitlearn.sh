@@ -25,7 +25,9 @@ KC_ADMIN_PASS="${KC_ADMIN_PASS:-admin}"
 MITXONLINE_HOST="${MITXONLINE_HOST:-mitxonline.odl.local}"
 APISIX_PORT="${APISIX_PORT:-9080}"
 ENV_FILE=".env"
+COMPOSE_FILE="docker-compose.yml"
 OVERRIDE_FILE="docker-compose.override.yml"
+APISIX_PROFILE="apisix"
 DEFAULT_APISIX_REDIRECT_HOST="mitxonline.odl.local"
 DEFAULT_APISIX_REDIRECT_PORT="9080"
 
@@ -92,6 +94,25 @@ if [[ ! -f "$ENV_FILE" ]]; then
   echo "❌ ERROR: ${ENV_FILE} not found. Are you in the MITx Online repo root?"
   exit 1
 fi
+
+if [[ ! -f "$COMPOSE_FILE" ]]; then
+  echo "❌ ERROR: ${COMPOSE_FILE} not found. Are you in the MITx Online repo root?"
+  exit 1
+fi
+
+# The override only adds extra_hosts for `api`. Compose merges that with the base
+# service definition (image, ports, volumes). Without the base `api` service, Compose
+# fails with: service "api" has neither an image nor a build context specified.
+if ! grep -qE '^\s+api:' "$COMPOSE_FILE" || ! grep -q 'apache/apisix' "$COMPOSE_FILE"; then
+  echo "❌ ERROR: ${COMPOSE_FILE} does not define the APISIX \`api\` service."
+  echo "     Pull a recent MITx Online main branch (needs docker-compose.yml"
+  echo "     service \`api\` with image apache/apisix and profile \`apisix\`)."
+  exit 1
+fi
+
+compose() {
+  docker compose --profile "${APISIX_PROFILE}" "$@"
+}
 
 if [[ "$APISIX_PORT" != "$DEFAULT_APISIX_REDIRECT_PORT" || "$MITXONLINE_HOST" != "$DEFAULT_APISIX_REDIRECT_HOST" ]]; then
   echo "  ⚠️  Custom APISIX host/port: update redirect_uri in config/apisix/apisix.yaml"
@@ -206,15 +227,23 @@ services:
 YAML
 echo "  ✅ Created ${OVERRIDE_FILE}"
 
+if ! compose config >/dev/null 2>&1; then
+  echo "  ❌ docker compose config failed after writing ${OVERRIDE_FILE}."
+  echo "     Run: docker compose --profile ${APISIX_PROFILE} config"
+  echo "     If you see 'api' has neither an image nor a build context, your"
+  echo "     MITx Online checkout is too old — git pull the latest main."
+  exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Step 5: Start services
 # ---------------------------------------------------------------------------
 echo ""
 echo "── Step 5: Starting services ───────────────────────────────────"
-docker compose up -d 2>&1 | tail -5
-docker compose up -d --force-recreate api 2>&1 | tail -3
+compose up -d
+compose up -d --force-recreate api
 sleep 3
-docker compose up -d web nginx 2>&1 | tail -3
+compose up -d web nginx
 echo "  ✅ Services started."
 
 # ---------------------------------------------------------------------------
@@ -247,7 +276,7 @@ REDIR_OK=$(echo "$REDIRECT" | grep -q "${KC_HOST}:${KC_PORT}/realms/${KC_REALM}"
 check "Login → Keycloak redirect" "$REDIR_OK" ""
 
 # APISIX DNS
-API_CONTAINER=$(docker compose ps -q api 2>/dev/null | head -1)
+API_CONTAINER=$(compose ps -q api 2>/dev/null | head -1)
 if [[ -n "$API_CONTAINER" ]]; then
   DNS_OK=$(docker exec "$API_CONTAINER" nslookup "${KC_HOST}" > /dev/null 2>&1 && echo true || echo false)
 else

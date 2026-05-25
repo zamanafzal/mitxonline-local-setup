@@ -26,7 +26,7 @@ Architecture in brief: MIT Learn and MITx Online each run their own APISIX (Lear
 Before running Part 1:
 
 1. **Docker Desktop** running
-2. **[MITx Online](https://github.com/mitodl/mitxonline)** cloned and bootstrapped (`cp .env.example .env`, `docker compose up` at least once)
+2. **[MITx Online](https://github.com/mitodl/mitxonline)** cloned on a **recent `main`** that includes the APISIX `api` service in `docker-compose.yml` (`image: apache/apisix:latest`, profile `apisix`). Older checkouts without that service will fail at Step 5 with `service "api" has neither an image nor a build context specified`.
 3. **[MIT Learn](https://github.com/mitodl/mit-learn)** running with Keycloak:
    - In MIT Learn `.env`: `COMPOSE_PROFILES=backend,frontend,keycloak,apisix`
    - Start: `docker compose up -d` in the MIT Learn repo
@@ -179,6 +179,7 @@ docker compose up -d --force-recreate api
 | Redirect loop on `:8013` | Use **`http://mitxonline.odl.local:9080`** for login, not `:8013` |
 | Error after Keycloak redirect | Confirm `config/apisix/apisix.yaml` has `redirect_uri: "http://mitxonline.odl.local:9080/login/.apisix/redirect"`; `docker compose up -d --force-recreate api` |
 | APISIX can't reach Keycloak | Ensure `docker-compose.override.yml` has `kc.ol.local:host-gateway` under `api`; recreate `api` |
+| `api` has neither an image nor a build context | Your MITx Online checkout is **too old** — `docker-compose.override.yml` only adds DNS for `api`; the image/ports come from base `docker-compose.yml`. Run `git pull` on MITx Online, then re-run the script |
 | Script fails at Keycloak step | Start MIT Learn with `keycloak` profile; check `curl http://localhost:8066/realms/ol-local/.well-known/openid-configuration` |
 
 More detail: [Part 1 troubleshooting](docs/part1-mitxonline-mitlearn-sso.md#troubleshooting)

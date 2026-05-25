@@ -149,6 +149,12 @@ services:
 **Why:** Docker containers cannot see your `/etc/hosts`. `host-gateway` tells each container to resolve `kc.ol.local` to the Docker host machine, where MIT Learn Keycloak is listening on port 8066.
 
 > The setup script **replaces** this file (backing up any existing copy to `.bak`). Merge manually if you already have custom overrides.
+>
+> **Important:** This override only adds `extra_hosts` for `api`. Docker Compose **merges** that with the `api` service in MITx Online’s base `docker-compose.yml` (which supplies `image: apache/apisix:latest`, ports, and volumes). If your MITx Online checkout does not define `api` in `docker-compose.yml`, Step 5 fails with:
+>
+> `service "api" has neither an image nor a build context specified`
+>
+> Fix: `git pull` in the MITx Online repo to get a current `main` branch.
 
 ---
 
@@ -156,12 +162,12 @@ services:
 
 ```bash
 cd /path/to/mitxonline
-docker compose up -d
-docker compose up -d --force-recreate api
+docker compose --profile apisix up -d
+docker compose --profile apisix up -d --force-recreate api
 docker compose up -d web nginx
 ```
 
-This starts all core services plus APISIX (port 9080) because `COMPOSE_PROFILES=apisix` is in `.env`. Recreating `api` ensures APISIX picks up Keycloak env vars (especially important after updating the client secret).
+This starts all core services plus APISIX (port 9080) because `COMPOSE_PROFILES=apisix` is in `.env`. The `api` service is behind the **`apisix` Compose profile** — always pass `--profile apisix` when starting or recreating it. Recreating `api` ensures APISIX picks up Keycloak env vars (especially important after updating the client secret).
 
 ---
 
@@ -235,10 +241,22 @@ You are hitting port 8013 (direct, no APISIX). **Always use port 9080 for browse
 - Restart APISIX: `docker compose up -d --force-recreate api`
 
 ### APISIX can't reach Keycloak
-Make sure `docker-compose.override.yml` exists and has `kc.ol.local:host-gateway` under the `api` service. Then: `docker compose up -d --force-recreate api`
+Make sure `docker-compose.override.yml` exists and has `kc.ol.local:host-gateway` under the `api` service. Then: `docker compose --profile apisix up -d --force-recreate api`
+
+### `service "api" has neither an image nor a build context specified`
+The override file only adds DNS (`extra_hosts`) for `api`. The APISIX **image and ports** must come from MITx Online’s base `docker-compose.yml`:
+
+```yaml
+  api:
+    image: apache/apisix:latest
+    profiles:
+      - apisix
+```
+
+If that block is missing, your MITx Online repo is too old — `git pull` the latest `main`, then re-run the setup script. Do **not** add a standalone `api` service with only `extra_hosts` to the override unless the base file already defines `api`.
 
 ### Keycloak client secret changed
-Re-run Step 2 to get the new secret, update `KEYCLOAK_CLIENT_SECRET` in `.env`, then: `docker compose up -d --force-recreate api`
+Re-run Step 2 to get the new secret, update `KEYCLOAK_CLIENT_SECRET` in `.env`, then: `docker compose --profile apisix up -d --force-recreate api`
 
 ### mitxonline admin login at port 9080
 `http://mitxonline.odl.local:9080/admin/login/` passes through to Django admin — shows standard username/password form.
