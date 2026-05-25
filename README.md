@@ -1,123 +1,218 @@
 # mitxonline-local-setup
 
-Automation scripts and documentation for setting up **MITx Online** local development SSO and LMS integration.
+Automation scripts and documentation for wiring **MITx Online** into a local dev stack: SSO with **MIT Learn** (Keycloak + APISIX) and (eventually) **Open edX / Tutor LMS**.
 
-The setup is split into two independent parts so you can work on each separately:
-
-| Part | What it does | Script |
-|------|-------------|--------|
-| **Part 1** | MITx Online ↔ MIT Learn SSO via Keycloak + APISIX | `scripts/setup_mitxonline_mitlearn.sh` |
-| **Part 2** | Tutor LMS ↔ MITx Online (Docker network, CORS, OAuth) | `scripts/setup_mitxonline_lms.sh` |
+| Part | Status | What it does |
+|------|--------|--------------|
+| **Part 1** | **Ready** | MITx Online ↔ MIT Learn SSO via shared Keycloak + MITx Online APISIX |
+| **Part 2** | **Not ready yet** | Tutor LMS ↔ MITx Online (Docker network, CORS, OAuth2) — draft docs/scripts exist but the Open edX side is **not validated for sharing**; use Part 1 only for now |
 
 ---
 
-## Quick Start
+## What Part 1 gives you
 
-### Prerequisites
+After Part 1:
 
-- Docker Desktop running
-- MITx Online repo cloned (the scripts run from its root)
-- For Part 1: MIT Learn running (`docker compose up` in the MIT Learn repo)
-- For Part 2: Part 1 completed + Tutor LMS installed
+- Browser login at **`http://mitxonline.odl.local:9080/login/`** redirects to MIT Learn Keycloak (`kc.ol.local:8066`)
+- A user already logged into **MIT Learn** (same Keycloak realm) is logged into **MITx Online** automatically
+- Direct access on **`http://mitxonline.odl.local:8013`** still works for dev, but **use `:9080` for SSO login**
 
-### Part 1 — MITx Online + MIT Learn SSO
+Architecture in brief: MIT Learn and MITx Online each run their own APISIX (Learn `:8065`, MITx Online `:9080`), but both authenticate against the **same** Keycloak instance.
+
+---
+
+## Prerequisites
+
+Before running Part 1:
+
+1. **Docker Desktop** running
+2. **[MITx Online](https://github.com/mitodl/mitxonline)** cloned and bootstrapped (`cp .env.example .env`, `docker compose up` at least once)
+3. **[MIT Learn](https://github.com/mitodl/mit-learn)** running with Keycloak:
+   - In MIT Learn `.env`: `COMPOSE_PROFILES=backend,frontend,keycloak,apisix`
+   - Start: `docker compose up -d` in the MIT Learn repo
+   - Verify Keycloak: `curl -sf http://localhost:8066/realms/ol-local/.well-known/openid-configuration` returns JSON
+
+Clone this repo anywhere (it does not need to live inside the MITx Online tree):
+
+```bash
+git clone https://github.com/zamanafzal/mitxonline-local-setup.git
+```
+
+---
+
+## Part 1 — Quick start (automated)
+
+Run from the **MITx Online repo root**. The script updates MITx Online’s `.env` and `docker-compose.override.yml` there — not in this repo.
 
 ```bash
 cd /path/to/mitxonline
 /path/to/mitxonline-local-setup/scripts/setup_mitxonline_mitlearn.sh
 ```
 
-The script will:
-1. Add required hostnames to `/etc/hosts` (asks for sudo)
-2. Auto-detect the Keycloak port and fetch the `apisix` client secret
-3. Update `.env` with all SSO settings
-4. Create `docker-compose.override.yml` for container DNS
-5. Start services and run verification checks
+You will be prompted for **sudo** once to add `/etc/hosts` entries if missing.
 
-After completion, open `http://mitxonline.odl.local:9080/login/` to test SSO.
+### What the script does
 
-### Part 2 — Tutor LMS + MITx Online
+1. Adds `127.0.0.1 mitxonline.odl.local` and `127.0.0.1 kc.ol.local` to `/etc/hosts` (skips if present)
+2. Auto-detects MIT Learn Keycloak port (default **8066**) and fetches the `apisix` client secret from the local Keycloak admin API
+3. Updates MITx Online `.env`:
+   - `COMPOSE_PROFILES=apisix` (MITx Online APISIX only — does **not** start MITx Online’s bundled Keycloak)
+   - Keycloak / APISIX / `MITOL_APIGATEWAY_*` settings for SSO
+4. Creates `docker-compose.override.yml` so containers can reach `kc.ol.local` via `host-gateway` (backs up any existing file to `.bak`)
+5. Runs `docker compose up`, recreates the APISIX (`api`) container, restarts `web` and `nginx`
+6. Prints pass/fail checks (Keycloak discovery, APISIX proxy, login redirect, DNS)
 
-```bash
-cd /path/to/mitxonline
-/path/to/mitxonline-local-setup/scripts/setup_mitxonline_lms.sh
-```
+### Manual alternative
 
-The script will:
-1. Add LMS hostnames to `/etc/hosts`
-2. Update `.env` with CORS settings for all MFE origins
-3. Patch the Tutor `docker-compose.yml` to join `mitxonline_default` network
-4. Connect the running LMS container to the network
-5. **Create (or retrieve) the OAuth2 Application** in MITx Online and print the Client ID + Secret
-6. Append CORS config to LMS `development.py`
-7. Restart MITx Online web/nginx and verify connectivity
-
-**Manual step after the script:** Create the OAuth2ProviderConfig in LMS admin using the Client ID and Secret printed by the script (see [Part 2 docs](docs/part2-tutor-lms-mitxonline.md#step-6--update-the-lms-oauth2-provider-config)).
+Step-by-step guide: [docs/part1-mitxonline-mitlearn-sso.md](docs/part1-mitxonline-mitlearn-sso.md)
 
 ---
 
-## CLI Options
+## Part 1 — Verification checklist
 
-Both scripts accept flags to override defaults. Use `--help` for the full list:
+After the script finishes (or after following the manual doc), confirm:
+
+### Automated checks (script output)
+
+| Check | Expected |
+|-------|----------|
+| Keycloak discovery | HTTP **200** for `http://kc.ol.local:8066/realms/ol-local/.well-known/openid-configuration` |
+| APISIX proxy | HTTP **200** for `http://mitxonline.odl.local:9080/` |
+| Login → Keycloak redirect | `curl` redirect URL contains `kc.ol.local:8066/realms/ol-local` |
+| APISIX DNS | `docker compose exec api nslookup kc.ol.local` resolves (host gateway) |
+
+### Manual commands
 
 ```bash
-./scripts/setup_mitxonline_mitlearn.sh --help
-./scripts/setup_mitxonline_lms.sh --help
+cd /path/to/mitxonline
+
+# Keycloak reachable from host
+curl -s -o /dev/null -w "%{http_code}\n" \
+  http://kc.ol.local:8066/realms/ol-local/.well-known/openid-configuration
+
+# APISIX serving MITx Online
+curl -s -o /dev/null -w "%{http_code}\n" http://mitxonline.odl.local:9080/
+
+# Login sends browser to Keycloak
+curl -s -o /dev/null -w "%{redirect_url}\n" --max-redirs 0 \
+  http://mitxonline.odl.local:9080/login/
+
+# APISIX container env loaded
+docker compose exec api env | grep KEYCLOAK_DISCOVERY_URL
+```
+
+### Browser smoke test
+
+1. Clear cookies for `mitxonline.odl.local` and `kc.ol.local`
+2. Open **`http://mitxonline.odl.local:9080/login/`**
+3. You should land on Keycloak at `http://kc.ol.local:8066`
+4. Log in with a local dev user (e.g. `student@odl.local` / `student` — seeded by MIT Learn Keycloak)
+5. You should return to MITx Online logged in
+
+**Cross-service SSO:** log into MIT Learn first, then visit `http://mitxonline.odl.local:9080/login/` — Keycloak should skip the password prompt.
+
+### What to check in MITx Online `.env`
+
+These should be set (the script does this for you):
+
+```dotenv
+COMPOSE_PROFILES=apisix
+APISIX_PORT=9080
+OPENEDX_SOCIAL_LOGIN_PATH=http://mitxonline.odl.local:9080/login/
+APP_LOGOUT_URL=http://mitxonline.odl.local:9080/logout/
+KEYCLOAK_REALM=ol-local
+KEYCLOAK_BASE_URL=http://kc.ol.local:8066
+KEYCLOAK_REALM_NAME=ol-local
+KEYCLOAK_DISCOVERY_URL=http://kc.ol.local:8066/realms/ol-local/.well-known/openid-configuration
+KEYCLOAK_CLIENT_ID=apisix
+KEYCLOAK_CLIENT_SECRET=<fetched at setup time — not committed>
+MITOL_APIGATEWAY_DISABLE_MIDDLEWARE=False
+MITOL_APIGATEWAY_USERINFO_CREATE=True
+MITOL_APIGATEWAY_USERINFO_UPDATE=True
+```
+
+> **Secrets:** `KEYCLOAK_CLIENT_SECRET` is written to your local MITx Online `.env` only. This repo contains no machine-specific secrets.
+
+---
+
+## Part 1 — CLI options
+
+```bash
+/path/to/mitxonline-local-setup/scripts/setup_mitxonline_mitlearn.sh --help
 ```
 
 Common overrides:
 
 ```bash
-# Part 1: custom Keycloak port
-./scripts/setup_mitxonline_mitlearn.sh --keycloak-port 9066
-
-# Part 2: custom Tutor root
-./scripts/setup_mitxonline_lms.sh --tutor-root ~/tutor-main
+# Non-default Keycloak port
+/path/to/mitxonline-local-setup/scripts/setup_mitxonline_mitlearn.sh --keycloak-port 9066
 ```
 
-All values can also be set via environment variables (`KC_PORT`, `APISIX_PORT`, `LMS_HOST`, etc.).
+Environment variables: `KC_PORT`, `KC_HOST`, `KC_REALM`, `APISIX_PORT`, `MITXONLINE_HOST`, etc.
+
+> **Custom hostname or APISIX port:** the script updates `.env` only. You must also edit `config/apisix/apisix.yaml` `redirect_uri` in the MITx Online repo to match.
 
 ---
 
-## Idempotent
+## Part 1 — Re-running and idempotency
 
-Both scripts are safe to re-run. They:
-- Skip `/etc/hosts` entries that already exist
-- Update `.env` keys in-place (no duplicates)
-- Skip Tutor compose patching if already done
-- Skip LMS CORS snippet if the marker comment is found
-- Back up files before overwriting
+Safe to re-run after Keycloak reset or `.env` drift. The script:
 
----
+- Skips existing `/etc/hosts` lines
+- Updates `.env` keys in place (no duplicates)
+- Recreates the APISIX container so Keycloak env vars reload
+- Backs up `docker-compose.override.yml` before overwriting
 
-## Documentation
+If Keycloak was recreated and login breaks, re-run the script (or refresh `KEYCLOAK_CLIENT_SECRET` manually) then:
 
-Detailed step-by-step guides (for when you want to do things manually):
-
-- [Part 1 — MITx Online + MIT Learn SSO](docs/part1-mitxonline-mitlearn-sso.md)
-- [Part 2 — Tutor LMS + MITx Online](docs/part2-tutor-lms-mitxonline.md)
+```bash
+cd /path/to/mitxonline
+docker compose up -d --force-recreate api
+```
 
 ---
 
-## Repo Structure
+## Part 1 — Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| Redirect loop on `:8013` | Use **`http://mitxonline.odl.local:9080`** for login, not `:8013` |
+| Error after Keycloak redirect | Confirm `config/apisix/apisix.yaml` has `redirect_uri: "http://mitxonline.odl.local:9080/login/.apisix/redirect"`; `docker compose up -d --force-recreate api` |
+| APISIX can't reach Keycloak | Ensure `docker-compose.override.yml` has `kc.ol.local:host-gateway` under `api`; recreate `api` |
+| Script fails at Keycloak step | Start MIT Learn with `keycloak` profile; check `curl http://localhost:8066/realms/ol-local/.well-known/openid-configuration` |
+
+More detail: [Part 1 troubleshooting](docs/part1-mitxonline-mitlearn-sso.md#troubleshooting)
+
+---
+
+## Part 2 — Open edX / Tutor LMS (not ready yet)
+
+Part 2 connects **Tutor LMS** to MITx Online for OAuth, CORS, and Docker networking. Files are included for early experimentation:
+
+- Script: `scripts/setup_mitxonline_lms.sh`
+- Doc: [docs/part2-tutor-lms-mitxonline.md](docs/part2-tutor-lms-mitxonline.md)
+
+**Do not rely on Part 2 for production or team onboarding yet.** The Open edX side still needs review, testing, and cleanup before it is documented as supported. Complete **Part 1** first; Part 2 will be marked ready in this README when validated.
+
+---
+
+## Repo structure
 
 ```
 mitxonline-local-setup/
 ├── README.md
 ├── .gitignore
 ├── docs/
-│   ├── part1-mitxonline-mitlearn-sso.md
-│   └── part2-tutor-lms-mitxonline.md
+│   ├── part1-mitxonline-mitlearn-sso.md   ← supported
+│   └── part2-tutor-lms-mitxonline.md      ← draft / not ready
 └── scripts/
-    ├── setup_mitxonline_mitlearn.sh
-    └── setup_mitxonline_lms.sh
+    ├── setup_mitxonline_mitlearn.sh       ← supported
+    └── setup_mitxonline_lms.sh            ← draft / not ready
 ```
 
 ---
 
-## Troubleshooting
+## Related MIT ODL repos
 
-See the troubleshooting sections in each doc:
-- [Part 1 troubleshooting](docs/part1-mitxonline-mitlearn-sso.md#troubleshooting)
-- [Part 2 troubleshooting](docs/part2-tutor-lms-mitxonline.md#troubleshooting)
-
+- [MITx Online](https://github.com/mitodl/mitxonline) — also see `docs/local-sso-setup.md` for a longer combined guide
+- [MIT Learn](https://github.com/mitodl/mit-learn) — see `README-keycloak.md` for Keycloak defaults and dev users

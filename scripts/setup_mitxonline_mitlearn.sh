@@ -6,11 +6,11 @@
 # Run from the MITx Online repo root.
 #
 # Usage:
-#   ./setup_mitxonline_mitlearn.sh
-#   ./setup_mitxonline_mitlearn.sh --keycloak-port 8066 --apisix-port 9080
+#   /path/to/mitxonline-local-setup/scripts/setup_mitxonline_mitlearn.sh
+#   /path/to/mitxonline-local-setup/scripts/setup_mitxonline_mitlearn.sh --keycloak-port 8066
 #
-# All flags are optional — defaults are auto-detected from the running
-# MIT Learn Keycloak and existing .env where possible.
+# Host/port overrides (--apisix-port, --mitxonline-host) update .env only.
+# You must also edit config/apisix/apisix.yaml redirect_uri to match.
 #
 set -euo pipefail
 
@@ -26,6 +26,8 @@ MITXONLINE_HOST="${MITXONLINE_HOST:-mitxonline.odl.local}"
 APISIX_PORT="${APISIX_PORT:-9080}"
 ENV_FILE=".env"
 OVERRIDE_FILE="docker-compose.override.yml"
+DEFAULT_APISIX_REDIRECT_HOST="mitxonline.odl.local"
+DEFAULT_APISIX_REDIRECT_PORT="9080"
 
 # Auto-detect Keycloak port from running mit-learn-keycloak container
 auto_detect_kc_port() {
@@ -59,13 +61,15 @@ while [[ $# -gt 0 ]]; do
     -h|--help)
       echo "Usage: $0 [OPTIONS]"
       echo ""
+      echo "Run from the MITx Online repo root."
+      echo ""
       echo "Options:"
       echo "  --keycloak-port PORT     Keycloak host port (default: auto-detect or 8066)"
       echo "  --keycloak-host HOST     Keycloak hostname (default: kc.ol.local)"
       echo "  --keycloak-realm REALM   Keycloak realm (default: ol-local)"
       echo "  --keycloak-client ID     Keycloak client ID (default: apisix)"
-      echo "  --apisix-port PORT       APISIX host port (default: 9080)"
-      echo "  --mitxonline-host HOST   MITx Online hostname (default: mitxonline.odl.local)"
+      echo "  --apisix-port PORT       APISIX host port (default: 9080; also edit apisix.yaml)"
+      echo "  --mitxonline-host HOST   MITx Online hostname (default: mitxonline.odl.local; also edit apisix.yaml)"
       echo "  --env-file PATH          Path to .env file (default: .env)"
       exit 0;;
     *) echo "Unknown option: $1"; exit 1;;
@@ -87,6 +91,12 @@ echo ""
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "❌ ERROR: ${ENV_FILE} not found. Are you in the MITx Online repo root?"
   exit 1
+fi
+
+if [[ "$APISIX_PORT" != "$DEFAULT_APISIX_REDIRECT_PORT" || "$MITXONLINE_HOST" != "$DEFAULT_APISIX_REDIRECT_HOST" ]]; then
+  echo "  ⚠️  Custom APISIX host/port: update redirect_uri in config/apisix/apisix.yaml"
+  echo "     to http://${MITXONLINE_HOST}:${APISIX_PORT}/login/.apisix/redirect"
+  echo ""
 fi
 
 # ---------------------------------------------------------------------------
@@ -112,7 +122,8 @@ echo "── Step 2: Keycloak client secret ────────────
 
 if ! curl -sf -o /dev/null "http://localhost:${KC_PORT}/realms/${KC_REALM}/.well-known/openid-configuration"; then
   echo "  ❌ Keycloak not reachable at localhost:${KC_PORT}."
-  echo "     Is MIT Learn running? (docker compose up in the MIT Learn repo)"
+  echo "     Is MIT Learn running with the keycloak profile?"
+  echo "     (COMPOSE_PROFILES=backend,frontend,keycloak,apisix in MIT Learn .env)"
   exit 1
 fi
 
@@ -151,17 +162,19 @@ set_env() {
   fi
 }
 
-set_env "COMPOSE_PROFILES"                "keycloak,apisix"
-set_env "APISIX_PORT"                     "${APISIX_PORT}"
-set_env "APP_LOGOUT_URL"                  "http://${MITXONLINE_HOST}:${APISIX_PORT}/logout/"
-set_env "OPENEDX_SOCIAL_LOGIN_PATH"       "http://${MITXONLINE_HOST}:${APISIX_PORT}/login/"
-set_env "KEYCLOAK_REALM"                  "${KC_REALM}"
-set_env "KEYCLOAK_DISCOVERY_URL"          "http://${KC_HOST}:${KC_PORT}/realms/${KC_REALM}/.well-known/openid-configuration"
-set_env "KEYCLOAK_CLIENT_ID"              "${KC_CLIENT_ID}"
-set_env "KEYCLOAK_CLIENT_SECRET"          "${KC_SECRET}"
-set_env "MITOL_APIGATEWAY_DISABLE_MIDDLEWARE" "False"
-set_env "MITOL_APIGATEWAY_USERINFO_CREATE"   "True"
-set_env "MITOL_APIGATEWAY_USERINFO_UPDATE"   "True"
+set_env "COMPOSE_PROFILES"                     "apisix"
+set_env "APISIX_PORT"                          "${APISIX_PORT}"
+set_env "APP_LOGOUT_URL"                       "http://${MITXONLINE_HOST}:${APISIX_PORT}/logout/"
+set_env "OPENEDX_SOCIAL_LOGIN_PATH"            "http://${MITXONLINE_HOST}:${APISIX_PORT}/login/"
+set_env "KEYCLOAK_REALM"                       "${KC_REALM}"
+set_env "KEYCLOAK_BASE_URL"                    "http://${KC_HOST}:${KC_PORT}"
+set_env "KEYCLOAK_REALM_NAME"                  "${KC_REALM}"
+set_env "KEYCLOAK_DISCOVERY_URL"               "http://${KC_HOST}:${KC_PORT}/realms/${KC_REALM}/.well-known/openid-configuration"
+set_env "KEYCLOAK_CLIENT_ID"                   "${KC_CLIENT_ID}"
+set_env "KEYCLOAK_CLIENT_SECRET"               "${KC_SECRET}"
+set_env "MITOL_APIGATEWAY_DISABLE_MIDDLEWARE"  "False"
+set_env "MITOL_APIGATEWAY_USERINFO_CREATE"     "True"
+set_env "MITOL_APIGATEWAY_USERINFO_UPDATE"     "True"
 
 rm -f "${ENV_FILE}.bak"
 echo "  ✅ .env updated."
@@ -199,6 +212,7 @@ echo "  ✅ Created ${OVERRIDE_FILE}"
 echo ""
 echo "── Step 5: Starting services ───────────────────────────────────"
 docker compose up -d 2>&1 | tail -5
+docker compose up -d --force-recreate api 2>&1 | tail -3
 sleep 3
 docker compose up -d web nginx 2>&1 | tail -3
 echo "  ✅ Services started."
@@ -233,7 +247,12 @@ REDIR_OK=$(echo "$REDIRECT" | grep -q "${KC_HOST}:${KC_PORT}/realms/${KC_REALM}"
 check "Login → Keycloak redirect" "$REDIR_OK" ""
 
 # APISIX DNS
-DNS_OK=$(docker exec mitxonline-api-1 nslookup "${KC_HOST}" > /dev/null 2>&1 && echo true || echo false)
+API_CONTAINER=$(docker compose ps -q api 2>/dev/null | head -1)
+if [[ -n "$API_CONTAINER" ]]; then
+  DNS_OK=$(docker exec "$API_CONTAINER" nslookup "${KC_HOST}" > /dev/null 2>&1 && echo true || echo false)
+else
+  DNS_OK=false
+fi
 check "APISIX DNS (${KC_HOST})" "$DNS_OK" ""
 
 echo ""
@@ -241,4 +260,3 @@ echo "════════════════════════�
 echo "  Setup complete!"
 echo "  Open http://${MITXONLINE_HOST}:${APISIX_PORT}/login/ to test SSO."
 echo "════════════════════════════════════════════════════════════════"
-

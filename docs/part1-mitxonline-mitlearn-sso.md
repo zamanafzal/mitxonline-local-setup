@@ -1,12 +1,19 @@
 # Part 1 — MITx Online + MIT Learn SSO Setup
 
-This document configures **MITx Online** to authenticate via **MIT Learn Keycloak** through **APISIX**.
+This document configures **MITx Online** to authenticate via **MIT Learn Keycloak** through **MITx Online's APISIX** gateway.
 
 After following this guide:
 - Logging in at `http://mitxonline.odl.local:9080/login/` redirects to Keycloak
 - A user already logged into MIT Learn is **automatically logged in** to MITx Online (shared Keycloak session)
 
-> **Automation:** Instead of following these steps manually, you can run `scripts/setup_mitxonline_mitlearn.sh` from the MITx Online repo root. See the [README](../README.md) for details.
+> **Automation:** Run the setup script from the MITx Online repo root (script lives in this repo):
+>
+> ```bash
+> cd /path/to/mitxonline
+> /path/to/mitxonline-local-setup/scripts/setup_mitxonline_mitlearn.sh
+> ```
+>
+> See the [README](../README.md) for details.
 
 ---
 
@@ -14,11 +21,14 @@ After following this guide:
 
 | Service | How it runs |
 |---|---|
-| MITx Online (`mitxonline-*` containers) | `docker compose up` in the mitxonline repo |
-| MIT Learn (`mit-learn-*` containers) | MIT Learn repo `docker compose up` |
-| MIT Learn Keycloak (`mit-learn-keycloak-1`) | Started as part of MIT Learn, runs on port **8066** |
+| MIT Learn Keycloak (`mit-learn-keycloak-1`) | MIT Learn repo with `keycloak` profile — e.g. `COMPOSE_PROFILES=backend,frontend,keycloak,apisix` in MIT Learn `.env`, then `docker compose up` |
+| MITx Online | Started by this guide or the setup script (Step 5) — does not need to be running beforehand |
 
-> MIT Learn Keycloak is at `http://kc.ol.local:8066`. It has an `ol-local` realm with an `apisix` client already configured. MITx Online will reuse this Keycloak — you do **not** need to start a separate Keycloak for MITx Online.
+> MIT Learn Keycloak is at `http://kc.ol.local:8066`. It has an `ol-local` realm with an `apisix` client already configured. MITx Online will reuse this Keycloak — you do **not** need MITx Online's bundled Keycloak (`kc.odl.local:7080`).
+
+### Two APISIX instances (by design)
+
+MIT Learn runs its own APISIX on port **8065** for the Learn frontend. This guide configures a **separate** MITx Online APISIX on port **9080** that talks to the **same** Keycloak. Cross-service SSO works because both gateways share the Keycloak session at `kc.ol.local:8066` — not because traffic goes through one APISIX.
 
 ---
 
@@ -31,12 +41,14 @@ Open `/etc/hosts` with sudo and make sure these lines are present:
 127.0.0.1   kc.ol.local
 ```
 
-To check and add in one command:
+To add manually (check first — `tee -a` will create duplicates if the line already exists):
 
 ```bash
-echo "127.0.0.1   mitxonline.odl.local" | sudo tee -a /etc/hosts
-echo "127.0.0.1   kc.ol.local" | sudo tee -a /etc/hosts
+grep -q mitxonline.odl.local /etc/hosts || echo "127.0.0.1   mitxonline.odl.local" | sudo tee -a /etc/hosts
+grep -q kc.ol.local /etc/hosts || echo "127.0.0.1   kc.ol.local" | sudo tee -a /etc/hosts
 ```
+
+The setup script deduplicates automatically.
 
 ---
 
@@ -72,8 +84,8 @@ Copy the secret — you will need it in Step 3.
 In the MITx Online repo root, open `.env` and set or add these values:
 
 ```dotenv
-# Tell Docker Compose to start APISIX
-COMPOSE_PROFILES=keycloak,apisix
+# Start MITx Online APISIX only (not the bundled mitxonline Keycloak)
+COMPOSE_PROFILES=apisix
 
 # APISIX port
 APISIX_PORT=9080
@@ -87,6 +99,8 @@ OPENEDX_SOCIAL_LOGIN_PATH=http://mitxonline.odl.local:9080/login/
 
 # MIT Learn Keycloak — use the ol-local realm on port 8066
 KEYCLOAK_REALM=ol-local
+KEYCLOAK_BASE_URL=http://kc.ol.local:8066
+KEYCLOAK_REALM_NAME=ol-local
 KEYCLOAK_DISCOVERY_URL=http://kc.ol.local:8066/realms/ol-local/.well-known/openid-configuration
 KEYCLOAK_CLIENT_ID=apisix
 KEYCLOAK_CLIENT_SECRET=<secret from Step 2>
@@ -98,6 +112,18 @@ MITOL_APIGATEWAY_USERINFO_UPDATE=True
 ```
 
 > **Do not change** `KEYCLOAK_SVC_HOSTNAME`, `KEYCLOAK_PORT`, or `KEYCLOAK_SSL_PORT`. Those are only used by the bundled mitxonline Keycloak which we are not using.
+>
+> `KEYCLOAK_REALM` is consumed by the APISIX container. `KEYCLOAK_REALM_NAME` and `KEYCLOAK_BASE_URL` are used by Django (e.g. account email/password update flows).
+
+### Custom hostname or APISIX port
+
+`config/apisix/apisix.yaml` hardcodes the OIDC callback:
+
+```
+redirect_uri: "http://mitxonline.odl.local:9080/login/.apisix/redirect"
+```
+
+If you change the hostname or port from the defaults above, you must edit that file to match **before** testing login.
 
 ---
 
@@ -122,6 +148,8 @@ services:
 
 **Why:** Docker containers cannot see your `/etc/hosts`. `host-gateway` tells each container to resolve `kc.ol.local` to the Docker host machine, where MIT Learn Keycloak is listening on port 8066.
 
+> The setup script **replaces** this file (backing up any existing copy to `.bak`). Merge manually if you already have custom overrides.
+
 ---
 
 ## Step 5 — Start everything
@@ -129,15 +157,11 @@ services:
 ```bash
 cd /path/to/mitxonline
 docker compose up -d
-```
-
-This starts all services including APISIX (port 9080) because `COMPOSE_PROFILES=keycloak,apisix` is in `.env`.
-
-After starting, restart web and nginx to pick up `.env` changes:
-
-```bash
+docker compose up -d --force-recreate api
 docker compose up -d web nginx
 ```
+
+This starts all core services plus APISIX (port 9080) because `COMPOSE_PROFILES=apisix` is in `.env`. Recreating `api` ensures APISIX picks up Keycloak env vars (especially important after updating the client secret).
 
 ---
 
@@ -159,7 +183,7 @@ curl -s -o /dev/null -w "%{redirect_url}" --max-redirs 0 \
 # Expected URL should contain: kc.ol.local:8066/realms/ol-local
 
 # 4. APISIX container can resolve kc.ol.local
-docker exec mitxonline-api-1 nslookup kc.ol.local
+docker compose exec api nslookup kc.ol.local
 # Expected: resolves to the host gateway IP
 ```
 
@@ -184,7 +208,7 @@ If the user is **already logged into MIT Learn** (same Keycloak), visiting `http
 ```
 Browser
   │
-  ├─ http://mitxonline.odl.local:9080  ──►  APISIX (mitxonline-api-1)
+  ├─ http://mitxonline.odl.local:9080  ──►  APISIX (mitxonline api service)
   │                                            │
   │                                            ├─ unauthenticated? ──► Keycloak (kc.ol.local:8066)
   │                                            │                          │
@@ -195,6 +219,8 @@ Browser
   │                                                          creates/updates user from headers
   │
   └─ http://mitxonline.odl.local:8013  ──►  Varnish ──► nginx ──► Django (direct, no APISIX)
+
+MIT Learn (separate): open.odl.local:8065 ──► Learn APISIX ──► same Keycloak (8066)
 ```
 
 ---
@@ -212,8 +238,7 @@ You are hitting port 8013 (direct, no APISIX). **Always use port 9080 for browse
 Make sure `docker-compose.override.yml` exists and has `kc.ol.local:host-gateway` under the `api` service. Then: `docker compose up -d --force-recreate api`
 
 ### Keycloak client secret changed
-Re-run Step 2 to get the new secret, update `KEYCLOAK_CLIENT_SECRET` in `.env`, then restart APISIX.
+Re-run Step 2 to get the new secret, update `KEYCLOAK_CLIENT_SECRET` in `.env`, then: `docker compose up -d --force-recreate api`
 
 ### mitxonline admin login at port 9080
 `http://mitxonline.odl.local:9080/admin/login/` passes through to Django admin — shows standard username/password form.
-
