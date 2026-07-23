@@ -56,17 +56,44 @@ You need these running/installed locally:
    ```
 3. **A mit-learn user.** Log in to mit-learn once in your browser so your user is provisioned
    (the proxy needs a real `global_id`). Any existing local user works.
-4. **The LMS (Open edX / Tutor)** with the feedback trigger installed and enabled:
-   - the `ol_openedx_feedback` plugin
-     ([open-edx-plugins #813](https://github.com/mitodl/open-edx-plugins/pull/813), merged)
-     installed (editable) in the LMS, and
-   - the CourseWaffleFlag **`ol_openedx_feedback.feedback_enabled`** turned **on** (globally or
-     for your test course). Without this the megaphone will not render on blocks.
-   - XBlock Asides enabled (Studio → Advanced Settings, or `XBlockAsidesConfig`).
+4. **The LMS (Open edX / Tutor) with the `ol_openedx_feedback` trigger installed and enabled.**
+   This renders the megaphone inside the unit iframe; without all three of these it won't show.
+   - **Install the plugin** into the **LMS** Python env
+     ([open-edx-plugins #813](https://github.com/mitodl/open-edx-plugins/pull/813), merged).
+     It self-registers via entry points (`xblock_asides.v1` + `lms.djangoapp`) — no
+     `INSTALLED_APPS` edits — but you must **restart the LMS** afterwards. Editable install
+     from a local checkout (recommended while iterating), or `pip install ol-openedx-feedback`:
+     ```bash
+     docker exec -it <lms-container> pip install -e /path/to/open-edx-plugins/src/ol_openedx_feedback
+     # then restart the LMS process/container
+     ```
+     LMS-only — do **not** install in Studio/CMS.
+   - **Enable XBlock Asides:** LMS admin → **XBlock Asides Config**
+     (`/admin/lms_xblock/xblockasidesconfig/`) → add an entry, check **Enabled**. Asides don't
+     render at all without this.
+   - **Turn on the waffle flag** `ol_openedx_feedback.feedback_enabled` (default off), globally
+     or per test course:
+     ```bash
+     docker exec <lms-container> ./manage.py lms waffle_flag \
+       ol_openedx_feedback.feedback_enabled --everyone --create
+     ```
 5. **The Learning MFE** (`frontend-app-learning`) checked out with the feedback slot wiring
-   from **[lehrer #83](https://github.com/mitodl/lehrer/pull/83)** and the drawer bundle from
-   **[smoot-design #241](https://github.com/mitodl/smoot-design/pull/241)** (until both merge,
-   use those PR branches). Install deps with `npm ci` (first time only).
+   from **[lehrer #83](https://github.com/mitodl/lehrer/pull/83)**, deps installed
+   (`npm ci`, first time only), **plus the smoot-design drawer bundle staged into its static
+   dir**. The MFE loads `feedbackDrawerManager.es.js` at runtime (like AskTIM) from
+   `public/static/smoot-design/` — it is **not** an npm dependency, so you must build it and
+   copy it in from a **[smoot-design #241](https://github.com/mitodl/smoot-design/pull/241)**
+   checkout (Node 24):
+   ```bash
+   # in your smoot-design checkout (branch zafzal/11629-feedback-drawer)
+   nvm use 24 && yarn build:bundles:feedback
+   # → dist/bundles/feedbackDrawerManager.es.js (+ .map); copy both into the MFE:
+   cp dist/bundles/feedbackDrawerManager.es.js dist/bundles/feedbackDrawerManager.es.js.map \
+     /path/to/frontend-app-learning/public/static/smoot-design/
+   ```
+   Sanity-check it's served: `curl -s -o /dev/null -w '%{http_code}\n' \
+   http://localhost:2000/static/smoot-design/feedbackDrawerManager.es.js` → **200**. Re-copy
+   whenever you rebuild the bundle so the MFE serves the current build.
 6. **The MFE `.env.development` must set `DEPLOYMENT_NAME='mitxonline'`.**
    ⚠️ This is the single most important flag: `env.config.jsx` only wires up the feedback
    (and AskTIM) sidebar coordinator when `DEPLOYMENT_NAME` contains `mitxonline`. Without it,
@@ -78,11 +105,12 @@ You need these running/installed locally:
    ```dotenv
    DEPLOYMENT_NAME='mitxonline'
    ENABLE_AI_DRAWER_SLOT='true'
-   FEEDBACK_SLOT_MODE='true'
    FEEDBACK_SUBMIT_URL='http://localhost:8899/api/v0/content_feedback/'
    FEEDBACK_CSRF_PRIME_URL='http://localhost:8899/api/v0/users/me/'
    FEEDBACK_CSRF_COOKIE_NAME='csrftoken-local'
    ```
+   (The drawer renders inline in the AskTIM sidebar column — slot mode is the default and only
+   presentation; there is no `FEEDBACK_SLOT_MODE` toggle.)
 
 ---
 
@@ -99,6 +127,16 @@ It auto-detects a mit-learn user and listens on `http://localhost:8899`. Startup
 
 Leave it running in its own terminal. You should see:
 `Using mit-learn user: <email> (global_id=…)`.
+
+**Confirm the shim is working** before touching the browser — hit it directly and expect a
+`200` (it primes CSRF and reaches mit-learn server-side):
+```bash
+curl -s -o /dev/null -w "prime: %{http_code}\n" \
+  http://localhost:8899/api/v0/users/me/ -H "Origin: http://localhost:2000"
+```
+`prime: 200` = the proxy authenticated to mit-learn and is ready. `000` = not up yet (give it
+~10s) or port in use; `403` = it couldn't authenticate (see Troubleshooting). For a full
+write test without the UI, use the headless check in [§4](#headless-quick-check-no-browser).
 
 Env overrides (all optional): `MITLEARN_CONTAINER` (default `mit-learn-web-1`),
 `MITLEARN_BACKEND` (default `http://localhost:8061`), `FEEDBACK_PROXY_PORT` (default `8899`),
@@ -160,7 +198,7 @@ Expect `prime: 200` and `submit: 201`.
 | Symptom | Likely cause / fix |
 |---|---|
 | **No megaphone on blocks** | LMS plugin `ol_openedx_feedback` not installed, XBlock Asides off, or waffle flag `ol_openedx_feedback.feedback_enabled` off for the course. |
-| **Click megaphone → nothing opens** | #1 cause: `DEPLOYMENT_NAME='mitxonline'` missing from the MFE `.env.development`, so the sidebar coordinator that handles feedback never mounts. Confirm it's set **and restart `npm run dev`** (env is read only at startup). Also confirm you're on `…/learning/…` and `ENABLE_AI_DRAWER_SLOT='true'` + `FEEDBACK_SLOT_MODE='true'`. (Verify in devtools: `document.querySelector('.feedback-drawer-slot-wrapper')` should exist.) |
+| **Click megaphone → nothing opens** | #1 cause: `DEPLOYMENT_NAME='mitxonline'` missing from the MFE `.env.development`, so the sidebar coordinator that handles feedback never mounts. Confirm it's set **and restart `npm run dev`** (env is read only at startup). Also confirm you're on `…/learning/…` and `ENABLE_AI_DRAWER_SLOT='true'`. (Verify in devtools: `document.querySelector('.feedback-drawer-slot-wrapper')` should exist.) |
 | **Submit fails / "Something went wrong"** | CORS: the proxy must reflect your MFE origin. Ensure you're running the current `feedback_proxy.py` (it echoes the request `Origin`) and re-run `./run_feedback_proxy.sh`. Confirm the proxy is up on `http://localhost:8899`. |
 | **`prime`/`submit` returns 000** | Proxy not up yet (it takes ~10s to start) or port 8899 in use (`lsof -ti tcp:8899 \| xargs kill`). |
 | **`submit` returns 403** | The proxy couldn't authenticate — ensure the mit-learn container is up and the detected user has a `global_id` (log in to mit-learn once). |
