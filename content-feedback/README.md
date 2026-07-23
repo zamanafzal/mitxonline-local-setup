@@ -1,4 +1,14 @@
-# Part 3 — Content Feedback: Local Testing Guide
+# Content Feedback — Local Testing Harness
+
+Self-contained local-only tooling to test the **per-block "Send feedback"** feature end to end.
+Everything you need lives in this folder:
+
+```
+content-feedback/
+├── README.md              ← you are here
+├── feedback_proxy.py      ← local-only auth proxy (stands in for APISIX)
+└── run_feedback_proxy.sh  ← auto-detects a local mit-learn user and starts the proxy
+```
 
 How to test the **per-block "Send feedback"** flow end to end on your machine:
 learner clicks the feedback **megaphone** on a course block → a drawer opens → they pick a
@@ -7,7 +17,7 @@ database.
 
 > **What this does and doesn't cover.** This exercises the real UI, the cross-origin message,
 > the drawer, and a real write to the mit-learn `content_feedback` API. Production auth
-> (APISIX + OIDC) is **simulated locally by a small proxy** (`scripts/feedback_proxy.py`) that
+> (APISIX + OIDC) is **simulated locally by a small proxy** (`feedback_proxy.py`) that
 > logs in as a real local user on the server side. So this proves the *feature* works; it does
 > **not** prove the production cross-origin auth (that's a separate, tracked item — see
 > [Why the proxy exists](#why-the-proxy-exists)).
@@ -25,7 +35,7 @@ browser can carry the mit-learn session + CSRF cookies on a cross-origin `fetch`
 Locally the pieces sit on **different sites over plain HTTP** (the MFE on
 `apps.local.openedx.io:2000`, mit-learn/APISIX on `open.odl.local:8065` or `localhost:8061`),
 so those cookies can't flow — `SameSite=None` requires `Secure`, which requires HTTPS. Rather
-than fake HTTPS + a shared parent domain, `scripts/feedback_proxy.py` stands in for APISIX: it
+than fake HTTPS + a shared parent domain, `feedback_proxy.py` stands in for APISIX: it
 authenticates to mit-learn **server-side** (injects the `X-Userinfo` header, primes CSRF,
 owns the session), so the browser never needs a mit-learn cookie. That is the one and only
 reason it exists; it is **local-only** and must never be deployed.
@@ -79,13 +89,13 @@ You need these running/installed locally:
 ## 2. Start the pieces
 
 ### a. Start the auth proxy (simulates APISIX)
-From **this repo root**:
+From **this folder** (`content-feedback/`):
 ```bash
-./scripts/run_feedback_proxy.sh
+./run_feedback_proxy.sh
 ```
 It auto-detects a mit-learn user and listens on `http://localhost:8899`. Startup takes ~10s
 (it queries the mit-learn DB for a user). Pin a specific user with
-`FEEDBACK_USER_EMAIL=you@example.edu ./scripts/run_feedback_proxy.sh`.
+`FEEDBACK_USER_EMAIL=you@example.edu ./run_feedback_proxy.sh`.
 
 Leave it running in its own terminal. You should see:
 `Using mit-learn user: <email> (global_id=…)`.
@@ -151,7 +161,7 @@ Expect `prime: 200` and `submit: 201`.
 |---|---|
 | **No megaphone on blocks** | LMS plugin `ol_openedx_feedback` not installed, XBlock Asides off, or waffle flag `ol_openedx_feedback.feedback_enabled` off for the course. |
 | **Click megaphone → nothing opens** | #1 cause: `DEPLOYMENT_NAME='mitxonline'` missing from the MFE `.env.development`, so the sidebar coordinator that handles feedback never mounts. Confirm it's set **and restart `npm run dev`** (env is read only at startup). Also confirm you're on `…/learning/…` and `ENABLE_AI_DRAWER_SLOT='true'` + `FEEDBACK_SLOT_MODE='true'`. (Verify in devtools: `document.querySelector('.feedback-drawer-slot-wrapper')` should exist.) |
-| **Submit fails / "Something went wrong"** | CORS: the proxy must reflect your MFE origin. Ensure you're running the current `feedback_proxy.py` (it echoes the request `Origin`) and re-run `./scripts/run_feedback_proxy.sh`. Confirm the proxy is up on `http://localhost:8899`. |
+| **Submit fails / "Something went wrong"** | CORS: the proxy must reflect your MFE origin. Ensure you're running the current `feedback_proxy.py` (it echoes the request `Origin`) and re-run `./run_feedback_proxy.sh`. Confirm the proxy is up on `http://localhost:8899`. |
 | **`prime`/`submit` returns 000** | Proxy not up yet (it takes ~10s to start) or port 8899 in use (`lsof -ti tcp:8899 \| xargs kill`). |
 | **`submit` returns 403** | The proxy couldn't authenticate — ensure the mit-learn container is up and the detected user has a `global_id` (log in to mit-learn once). |
 | **Proxy: "no mit-learn user with a global_id"** | Log in to mit-learn in the browser once, or pass `FEEDBACK_USER_EMAIL=…`. |
