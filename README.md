@@ -6,6 +6,7 @@ Automation scripts and documentation for wiring **MITx Online** into a local dev
 |------|--------|--------------|
 | **Part 1** | **Ready** | MITx Online ↔ MIT Learn SSO via shared Keycloak + MITx Online APISIX |
 | **Part 2** | **Not ready yet** | Tutor LMS ↔ MITx Online (Docker network, CORS, OAuth2) — draft docs/scripts exist but the Open edX side is **not validated for sharing**; use Part 1 only for now |
+| **Part 3** | **Test harness** | Local end-to-end testing of the per-block **content feedback** feature (mit-learn backend) via a local-only auth proxy that stands in for APISIX |
 
 ---
 
@@ -197,6 +198,23 @@ Part 2 connects **Tutor LMS** to MITx Online for OAuth, CORS, and Docker network
 
 ---
 
+## Part 3 — Content feedback local testing (test harness)
+
+A **local-only** auth proxy (`scripts/feedback_proxy.py`) that lets you test the per-block **"Send feedback"** feature end to end on your machine: click the megaphone on a course block → drawer opens → pick 👍 / 👎 / 💡 + comment → submit → a row lands in the **mit-learn** `content_feedback` table.
+
+Why a proxy? In production the Learning MFE and mit-learn are **same-site over HTTPS**, so the browser carries mit-learn's session + CSRF cookies on a cross-origin submit (APISIX injects identity). Locally the pieces are on **different sites over plain HTTP**, so those cookies can't flow. The proxy stands in for APISIX — it authenticates to mit-learn **server-side** (injects `X-Userinfo`, primes CSRF, owns the session), so the browser needs no mit-learn cookie. This proves the *feature*; it does **not** exercise production cross-origin auth.
+
+```bash
+# from this repo root, with mit-learn's docker stack up
+./scripts/run_feedback_proxy.sh          # auto-detects a local mit-learn user; listens on :8899
+```
+
+Then point the Learning MFE's `.env.development` `FEEDBACK_SUBMIT_URL` / `FEEDBACK_CSRF_PRIME_URL` at the proxy and start it. Full step-by-step (prereqs, LMS plugin + waffle flag, MFE slot wiring, verification, troubleshooting): [docs/part3-content-feedback-testing.md](docs/part3-content-feedback-testing.md).
+
+> **Local-only.** `feedback_proxy.py` / `run_feedback_proxy.sh` simulate production auth and must **never** be deployed. Related PRs: open-edx-plugins #813 (trigger, merged), mit-learn #3593 (backend, merged), smoot-design #241 (drawer) and lehrer #83 (MFE slot wiring) — both open. Feature tracking: `mitodl/hq#11629`.
+
+---
+
 ## Repo structure
 
 ```
@@ -205,10 +223,13 @@ mitxonline-local-setup/
 ├── .gitignore
 ├── docs/
 │   ├── part1-mitxonline-mitlearn-sso.md   ← supported
-│   └── part2-tutor-lms-mitxonline.md      ← draft / not ready
+│   ├── part2-tutor-lms-mitxonline.md      ← draft / not ready
+│   └── part3-content-feedback-testing.md  ← test harness
 └── scripts/
     ├── setup_mitxonline_mitlearn.sh       ← supported
-    └── setup_mitxonline_lms.sh            ← draft / not ready
+    ├── setup_mitxonline_lms.sh            ← draft / not ready
+    ├── feedback_proxy.py                  ← Part 3 (local-only auth proxy)
+    └── run_feedback_proxy.sh              ← Part 3 (starts the proxy)
 ```
 
 ---
