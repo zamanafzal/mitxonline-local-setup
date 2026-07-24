@@ -27,9 +27,12 @@ fi
 # Auto-detect a user (or the one pinned by FEEDBACK_USER_EMAIL). We need a
 # global_id because that is what APISIX would send and what the backend keys on.
 LOOKUP_EMAIL="${FEEDBACK_USER_EMAIL:-}"
-INFO=$(docker exec "$CONTAINER" python manage.py shell -c "
+# Pass the email through the container env (not string-interpolated into the
+# Python source) so an odd address can't break or inject into the snippet.
+INFO=$(docker exec -e LOOKUP_EMAIL="$LOOKUP_EMAIL" "$CONTAINER" python manage.py shell -c "
+import os
 from users.models import User
-email = '''$LOOKUP_EMAIL'''
+email = os.environ.get('LOOKUP_EMAIL', '')
 qs = User.objects.filter(global_id__isnull=False).exclude(global_id='')
 u = qs.filter(email=email).first() if email else qs.first()
 print((u.global_id + '|' + (u.email or '')) if u else '')

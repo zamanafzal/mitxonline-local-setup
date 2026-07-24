@@ -115,7 +115,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):  # noqa: N802
-        # Primes / passes through auth GETs (e.g. the client's users/me priming).
+        # Handles the client's CSRF prime GET (e.g. users/me): primes the cookie
+        # server-side and returns an empty JSON body — the browser only needs a
+        # 200 + CORS here, not the real payload.
         _prime_csrf()
         self.send_response(200)
         self._cors()
